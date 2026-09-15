@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: socialflow-postgres
+    environment:
+      POSTGRES_USER: socialflow_user
+      POSTGRES_PASSWORD: socialflow_dev_password_change_in_prod
+      POSTGRES_DB: socialflow_28
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U socialflow_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache & Job Queue
+  redis:
+    image: redis:7-alpine
+    container_name: socialflow-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MinIO S3-Compatible Storage (Local Development)
+  minio:
+    image: minio/minio:latest
+    container_name: socialflow-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/minio_data
+    command: minio server /minio_data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Application
+  app:
+    build: .
+    container_name: socialflow-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://socialflow_user:socialflow_dev_password_change_in_prod@postgres:5432/socialflow_28"
+      REDIS_URL: "redis://redis:6379"
+      AWS_S3_ENDPOINT: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin123"
+      AWS_REGION: "us-east-1"
+      AWS_S3_BUCKET: "socialflow-dev"
+      NEXTAUTH_URL: "http://localhost:3000"
+      NODE_ENV: "development"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
+
+  # Background Job Worker
+  worker:
+    build: .
+    container_name: socialflow-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://socialflow_user:socialflow_dev_password_change_in_prod@postgres:5432/socialflow_28"
+      REDIS_URL: "redis://redis:6379"
+      AWS_S3_ENDPOINT: "http://minio:9000"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin123"
+      AWS_REGION: "us-east-1"
+      AWS_S3_BUCKET: "socialflow-dev"
+      NODE_ENV: "development"
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run worker:start
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  default:
+    name: socialflow-network
